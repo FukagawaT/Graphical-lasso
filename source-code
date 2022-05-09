@@ -1,0 +1,262 @@
+# coding: utf-8
+# Your code here!
+
+% matplotlib inline 
+
+import datetime
+import math
+import copy
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+
+###################################
+####パラメータ設定
+###################################
+
+rho = 0.6
+epsilon_beta = 0.001
+epsilon_lambda = 0.001
+
+###################################
+####csvファイル読み込み
+###################################
+
+rawdata_array = pd.read_csv('/content/sample_data/quote_2002_2022_validation.csv', header=None)
+f_ndarray = copy.copy(rawdata_array)
+
+#print(rawdata_array)
+
+###################################
+####データから文字列の削除
+####object型を含む列は削除する。NaNはは0に置き換える。
+###################################
+
+f_ndarray = f_ndarray.drop(columns=f_ndarray.columns[[31]])
+f_ndarray = f_ndarray.drop(columns=f_ndarray.select_dtypes(include='object').columns)
+
+#print(f_ndarray)
+
+for i in range(len(f_ndarray)):
+  for j in range(1,len(f_ndarray.columns)): 
+    if np.isnan(f_ndarray.iat[i,j]) == True:
+      f_ndarray.iat[i,j] = 0.0
+
+#print(f_ndarray)
+
+###################################
+####最尤推定量 u_hat，sigma_hatを求める
+###################################
+
+x_sum = f_ndarray.sum(axis=0, numeric_only=True)
+uhat = x_sum/len(f_ndarray)
+
+x_uhat_sum = 0.0 
+
+#print(x_sum)
+#print(uhat)
+
+for i in range(len(f_ndarray)):
+  x_uhat_sum_temp = f_ndarray.iloc[i,:] - uhat
+  x_uhat_sum = x_uhat_sum + (x_uhat_sum_temp * x_uhat_sum_temp)
+  
+#print(f_ndarray.iloc[0,1:])
+
+sigma_hat = x_uhat_sum/len(f_ndarray)
+
+#print(sigma_hat)
+
+###################################
+####データの標準化を行う。
+###################################
+
+#標準化データの初期化。
+xstnd_array = copy.copy(f_ndarray)
+
+for i in range(len(xstnd_array)):
+  for j in range(len(xstnd_array.columns)):
+    xstnd_array.iat[i,j] = (xstnd_array.iat[i,j] - uhat.iat[j]) / math.sqrt(sigma_hat.iat[j])
+    #データ中ののNaNを置換するテストコード。
+    if np.isnan(xstnd_array.iat[i,j]) == True:
+      xstnd_array.iat[i,j] = 0.01
+
+#print(xstnd_array)
+
+###################################
+####分散共分散行列を求める。
+###################################
+
+#分散共分散行列Sの初期化。pandas DataFrameとして定義。
+S_array = np.zeros((len(xstnd_array.columns), len(xstnd_array.columns)), dtype=float)    
+S_array = pd.DataFrame(S_array)                                                          
+
+#print(S_array)
+
+for i in range(len(xstnd_array.columns)):
+  for j in range(len(xstnd_array.columns)):
+    for n in range(len(xstnd_array)):
+      S_array.iat[i,j] += ( xstnd_array.iat[n,i] * xstnd_array.iat[n,j] )
+
+for i in range(len(xstnd_array.columns)):
+  for j in range(len(xstnd_array.columns)):
+    S_array.iat[i,j] = S_array.iat[i,j] / len(xstnd_array)
+
+#S_array = np.round(S_array, decimals=3)
+
+#print(S_array)
+
+###################################
+####疎構造学習-ラッソ回帰の問題を反復式(座標降下法)で解く。
+###################################
+
+#ラムダおよびそのの逆行列をSとして初期化。
+lambda_tilde_array = np.zeros((len(S_array.columns), len(S_array.columns)), dtype=float)
+lambda_tilde_array = pd.DataFrame(lambda_tilde_array)
+lambda_inverse_tilde_array = copy.copy(S_array)
+lambda_inverse_tilde_array = pd.DataFrame(lambda_inverse_tilde_array)
+temp_array = np.zeros((len(S_array.columns), len(S_array.columns)), dtype=float)
+temp_array = pd.DataFrame(temp_array) + 0.0
+
+#行列Wの初期化、(M-1)×(M-1)行列。
+W_array = np.zeros((len(S_array.columns)-1, len(S_array.columns)-1), dtype=float)       
+W_array = pd.DataFrame(W_array)
+
+#列ベクトルWの初期化、(M-1)列。
+W_columns = np.zeros(len(S_array.columns)-1, dtype=float)       
+W_columns = pd.DataFrame(W_columns)
+
+#収束判定に使うepsilonの初期化。
+epsilon_array = np.zeros(len(S_array.columns)-1, dtype=float)
+epsilon_array = pd.DataFrame(epsilon_array) + 0.0
+
+#Aの初期化、M-1列ベクトル。
+A_array = np.zeros(len(S_array.columns)-1, dtype=float)                                 
+A_array = pd.DataFrame(A_array)  
+
+while True:
+  
+  for i in range(len(xstnd_array.columns)):
+
+    #Betaの初期化。
+    beta = np.zeros(len(S_array.columns)-1, dtype=float)
+    beta = pd.DataFrame(beta) + 0.0
+    beta_temp = np.zeros(len(S_array.columns)-1, dtype=float)
+    beta_temp = pd.DataFrame(beta_temp) + 0.0 
+
+    #lambda_inverse_tilde_arrayからW_arrayを生成。
+    W_array = lambda_inverse_tilde_array.drop(index=lambda_inverse_tilde_array.index[[i]], columns=lambda_inverse_tilde_array.columns[[i]])
+    #列ベクトルs_columnsの初期化。
+    s_columns = copy.copy(S_array.iloc[:,i])                                                    
+    s_columns = s_columns.drop(s_columns.index[[i]]) 
+    s_columns = pd.DataFrame(s_columns)
+
+    print('M=',i)
+
+    #Betaの反復計算。
+    while True:
+
+      #収束判定フラグの初期化。
+      convergence_flag = 0
+
+      #Betaj, Ajの計算。
+      for j in range(len(W_array)):
+        A_array.iat[j,0] = copy.copy(s_columns.iat[j,0])
+        for k in range(len(W_array)): 
+          if k == j:
+            continue
+          A_array.iat[j,0] = A_array.iat[j,0] - ( W_array.iat[j,k] * beta.iat[k,0] )
+
+        #Beta>0の場合。
+        if A_array.iat[j,0] > rho:
+          beta.iat[j,0] = ( A_array.iat[j,0] - rho ) / W_array.iat[j,j] 
+        #Beta<0の場合。
+        if A_array.iat[j,0] < ( - rho) :
+          beta.iat[j,0] = ( A_array.iat[j,0] + rho ) / W_array.iat[j,j]
+        #Beta=0の場合。 
+        if np.abs(A_array.iat[j,0]) <= rho :
+          beta.iat[j,0] = 0.0
+        
+      #収束判定
+      epsilon_array = np.abs( np.abs(beta_temp) - np.abs(beta) ) 
+      beta_temp = copy.copy(beta)
+      #print(A_array)
+      #print(beta)
+
+      convergence_beta = 0
+
+      for convergence_beta in range(len(epsilon_array)):
+        if epsilon_array.iat[convergence_beta,0] < epsilon_beta:
+          convergence_flag += 1
+
+      if convergence_flag == len(epsilon_array):
+        #sigma, small_lambda, l_seriese, W_serieseの算出
+        sigma = 0.0
+        denominator = 0.0
+        sigma = S_array.iat[i,i] + rho
+        denominator = sigma - np.dot( np.dot(beta.T, W_array), beta )
+
+        small_lambda = 1 / denominator
+        l_seriese = - ( beta / denominator )
+        W_seriese = np.dot(W_array, beta)
+        W_seriese = pd.DataFrame(W_seriese)
+
+        #lambda_inverse_tilde と lambda_tilde の各要素を置き換える。
+        j = 0
+        k = 0
+
+        for j in range(len(l_seriese)):
+          lambda_tilde_array.iat[j,i] = l_seriese.iat[j,0]
+          lambda_tilde_array.iat[i,j] = l_seriese.iat[j,0]
+          lambda_inverse_tilde_array.iat[j,i] = W_seriese.iat[j,0]
+          lambda_inverse_tilde_array.iat[i,j] = W_seriese.iat[j,0]
+          if j == i:
+            for k in range(j, len(l_seriese)):
+              lambda_tilde_array.iat[k+1,i] = l_seriese.iat[k,0]
+              lambda_tilde_array.iat[i,k+1] = l_seriese.iat[k,0]
+              lambda_inverse_tilde_array.iat[k+1,i] = W_seriese.iat[k,0]
+              lambda_inverse_tilde_array.iat[i,k+1] = W_seriese.iat[k,0]
+            break
+
+        lambda_tilde_array.iat[i,i] = small_lambda
+        lambda_inverse_tilde_array.iat[i,i] = sigma
+        
+        break
+
+  #lambdaについて収束判定
+  lambda_delta = np.abs( np.abs(temp_array) - np.abs(lambda_tilde_array) )
+
+  j = 0
+  k = 0
+  convergence_lambda = 0
+  convergence_flag = 0 
+
+  for j in range(len(lambda_tilde_array)):
+    for k in range(len(lambda_tilde_array)):
+      if lambda_delta.iat[j,k] < epsilon_lambda:
+        convergence_flag += 1
+      #収束待ちの要素を識別するテストコード
+      #else:
+      #  print('収束待ち', lambda_delta.iat[j,k], 'j=', j, 'k=', k)
+  
+  #print(convergence_flag)
+
+  if convergence_flag == (len(lambda_tilde_array) * len(lambda_tilde_array.columns)):
+    break
+
+  temp_array = copy.copy(lambda_tilde_array)
+
+  #print(lambda_tilde_array)
+
+###################################
+####偏相関係数を求める。
+###################################
+
+r = np.zeros((len(lambda_tilde_array.columns), len(lambda_tilde_array.columns)), dtype=float)
+r = pd.DataFrame(r)
+
+for i in range(len(r)):
+  for j in range(len(r)):
+    r.iat[i,j] = - ( lambda_tilde_array.iat[i,j] / math.sqrt(lambda_tilde_array.iat[i,i]*lambda_tilde_array.iat[j,j]) )
+
+print(r)
+
